@@ -1,4 +1,5 @@
-import { J2000_JD, epochById, precessRaDec, type EpochId } from "./astro";
+import { J2000_JD, epochById, precessRaDec, shiftToYear, type EpochId } from "./astro";
+import { bodiesAt, type Body } from "./planets";
 import type { ChineseSky, SkyStar } from "./sky";
 
 /**
@@ -63,4 +64,21 @@ export function meanPrecessionShift(sky: ChineseSky, epochId: EpochId): number {
     sum += (Math.acos(Math.max(-1, Math.min(1, c))) * 180) / Math.PI;
   }
   return sum / sky.stars.length;
+}
+
+/**
+ * 日月五星：位置按「所选历元的年份 + 用户拨的钟点」计算，再岁差归算到该历元。
+ *
+ * 行星根数给的是 J2000 固定参考系坐标，而星表也是 J2000，两边做同一次岁差，
+ * 才能落在同一片星空上。若不做，北宋星空里行星会错位十几度。
+ */
+export function bodiesAtEpoch(clockMs: number, epochId: EpochId): Body[] {
+  // clockMs 在挂载前为 0；此时不给位置，避免服务端与客户端用不同「现在」渲染出分歧
+  if (!Number.isFinite(clockMs) || clockMs <= 0) return [];
+  const ep = epochById(epochId);
+  const ms = shiftToYear(clockMs, ep.year);
+  return bodiesAt(ms).map((b) => {
+    const { ra, dec } = precessRaDec(b.ra, b.dec, ep.jd, J2000_JD);
+    return { ...b, ra, dec };
+  });
 }

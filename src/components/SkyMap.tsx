@@ -12,18 +12,31 @@ import {
 import { Chip, Dock, DockSection, Slider, Toggle } from "@/components/ui";
 import { SkyClockPanel, useSkyClock } from "@/components/TimeSync";
 import { DEFAULT_EPOCH, EPOCHS, SIDEREAL_DAY_MS, type EpochId } from "@/lib/astro";
-import { applyEpoch, meanPrecessionShift, precessList } from "@/lib/epoch";
+import type { Body } from "@/lib/planets";
+import { exportSvgToPng, useUrlState } from "@/lib/export";
+import { applyEpoch, bodiesAtEpoch, meanPrecessionShift, precessList } from "@/lib/epoch";
 import { milkyWayPoints } from "@/lib/milkyway";
 
+/** 历代都城纬度 —— 用于演示「南巡所见星空不同」 */
+const SITES: { name: string; lat: number }[] = [
+  { name: "开封", lat: 34.8 },
+  { name: "长安", lat: 34.27 },
+  { name: "洛阳", lat: 34.62 },
+  { name: "北京", lat: 39.9 },
+  { name: "南京", lat: 32.06 },
+  { name: "杭州", lat: 30.25 },
+  { name: "广州", lat: 23.13 },
+];
+
 /** 盖图上的银河星尘（固定 seed，服务端与客户端必须一致） */
-const MILKY_SVG = milkyWayPoints(2200, 20260101);
+const MILKY_SVG = milkyWayPoints(1000, 20260101);
 
 /** 画布半径：去极度 180°（南天极）对应 R_MAX */
 const R_MAX = 520;
 const R_NAME = 468; // 二十八宿名标注圈
 const OBLIQUITY = 23.4393;
-/** 内规 = 恒显圈：去极度 ≤ 观测纬度（开封 34.8°）的星永不落下 */
-const INNER_QJ = LATITUDE_KAIFENG;
+/** 默认观测纬度（开封）—— 内规 = 恒显圈，去极度 ≤ 纬度 的星永不落下 */
+const DEFAULT_LAT = LATITUDE_KAIFENG;
 
 const VIEW = 1160;
 const BASE_VB = { x: -VIEW / 2, y: -VIEW / 2, w: VIEW };
@@ -42,9 +55,16 @@ function toXY(raDeg: number, decDeg: number): [number, number] {
 }
 
 const qujiToR = (quji: number) => +((quji / 180) * R_MAX).toFixed(3);
-const R_INNER = qujiToR(INNER_QJ);
 const R_EQ = qujiToR(90);
-const R_OUTER = qujiToR(180 - INNER_QJ);
+
+/** 随纬度变化的几何量（内规 / 外规 / 天顶 / 地平曲线） */
+interface SiteGeo {
+  rInner: number;
+  rOuter: number;
+  rZenith: number;
+  horizon: string;
+  below: string;
+}
 
 /** 星等 → 点半径 */
 function magToR(mag: number): number {
@@ -148,18 +168,22 @@ const LineLayer = memo(function LineLayer({
    觀測者座標 —— 固定於圖紙（不隨天球旋轉）
    ========================================================================== */
 
-/** 天顶去极度 = 90° − 观测纬度 */
-const ZENITH_QJ = 90 - LATITUDE_KAIFENG;
-const R_ZENITH = qujiToR(ZENITH_QJ);
-
 /**
  * 此刻地平线在极坐标星图上的投影。
  * 地平条件：天体与天顶球面距 = 90° ⟹ cot p = −cot φ · cos(ψ − ψ天顶)
  * 图解极端：ψ = 天顶方向时 p = 180 − φ（南天极侧边界），反向时 p = φ（恒显圈），
  * 与既有的外规 / 内规半径完全吻合，可作为自洽校验。
  */
-const HORIZON_PATH = (() => {
-  const cot = 1 / Math.tan((LATITUDE_KAIFENG * Math.PI) / 180);
+/** 地平以下遮罩的外边界 = 整圆 */
+const OUTER_CIRCLE_PATH = `M 0,${-R_MAX} A ${R_MAX},${R_MAX} 0 1,0 0,${R_MAX} A ${R_MAX},${R_MAX} 0 1,0 0,${-R_MAX} Z`;
+
+/**
+ * 按观测纬度生成盖图几何。
+ * 天顶去极度 = 90° − 纬度；恒显圈（内规）去极度 = 纬度。
+ */
+function siteGeometry(lat: number): SiteGeo {
+  const safe = Math.max(1, Math.min(89, lat));
+  const cot = 1 / Math.tan((safe * Math.PI) / 180);
   const pts: string[] = [];
   for (let d = 0; d <= 360; d += 0.5) {
     const p =
@@ -170,12 +194,15 @@ const HORIZON_PATH = (() => {
       `${(r * Math.cos(psi)).toFixed(2)},${(r * Math.sin(psi)).toFixed(2)}`
     );
   }
-  return "M" + pts.join("L") + "Z";
-})();
-
-/** 地平以下遮罩 = 外圆之内、地平曲线之外（even-odd 填充） */
-const OUTER_CIRCLE_PATH = `M 0,${-R_MAX} A ${R_MAX},${R_MAX} 0 1,0 0,${R_MAX} A ${R_MAX},${R_MAX} 0 1,0 0,${-R_MAX} Z`;
-const BELOW_HORIZON_PATH = `${HORIZON_PATH} ${OUTER_CIRCLE_PATH}`;
+  const horizon = "M" + pts.join("L") + "Z";
+  return {
+    rInner: qujiToR(lat),
+    rOuter: qujiToR(180 - lat),
+    rZenith: qujiToR(90 - lat),
+    horizon,
+    below: `${horizon} ${OUTER_CIRCLE_PATH}`,
+  };
+}
 
 /** 太阳此刻所在（置于旋转层内，随恒星时转动） */
 const SunMarker = memo(function SunMarker({
@@ -211,24 +238,28 @@ const SunMarker = memo(function SunMarker({
 });
 
 /** 地平遮罩 · 子午线 · 天顶 */
-const ObserverFrame = memo(function ObserverFrame() {
+const ObserverFrame = memo(function ObserverFrame({
+  geo,
+}: {
+  geo: SiteGeo;
+}) {
   return (
     <g style={{ pointerEvents: "none" }}>
       <path
-        d={BELOW_HORIZON_PATH}
+        d={geo.below}
         fillRule="evenodd"
         fill="#04060b"
         opacity={0.74}
       />
       <path
-        d={HORIZON_PATH}
+        d={geo.horizon}
         fill="none"
         stroke="#6fb4e8"
         strokeWidth={4}
         opacity={0.07}
       />
       <path
-        d={HORIZON_PATH}
+        d={geo.horizon}
         fill="none"
         stroke="#6fb4e8"
         strokeWidth={1.4}
@@ -249,7 +280,7 @@ const ObserverFrame = memo(function ObserverFrame() {
       {/* 天顶 */}
       <circle
         cx={0}
-        cy={-R_ZENITH}
+        cy={-geo.rZenith}
         r={7.5}
         fill="none"
         stroke="#6fb4e8"
@@ -257,12 +288,12 @@ const ObserverFrame = memo(function ObserverFrame() {
         opacity={0.85}
       />
       <path
-        d={`M -12,${-R_ZENITH} h 24 M 0,${-R_ZENITH - 12} v 24`}
+        d={`M -12,${-geo.rZenith} h 24 M 0,${-geo.rZenith - 12} v 24`}
         stroke="#6fb4e8"
         strokeWidth={1}
         opacity={0.7}
       />
-      <text x={15} y={-R_ZENITH - 5} fontSize={13} fill="#8ec6ef" opacity={0.9}>
+      <text x={15} y={-geo.rZenith - 5} fontSize={13} fill="#8ec6ef" opacity={0.9}>
         天顶
       </text>
       <text x={9} y={-R_MAX + 32} fontSize={12} fill="#6fb4e8" opacity={0.7}>
@@ -270,7 +301,7 @@ const ObserverFrame = memo(function ObserverFrame() {
       </text>
       <text
         x={16}
-        y={qujiToR(LATITUDE_KAIFENG) + 18}
+        y={geo.rInner + 18}
         fontSize={11}
         fill="#6fb4e8"
         opacity={0.62}
@@ -284,13 +315,20 @@ const ObserverFrame = memo(function ObserverFrame() {
 export default function SkyMap({ sky }: { sky: ChineseSky }) {
   const svgRef = useRef<SVGSVGElement>(null);
 
-  /** 显示历元：星表本身仍是 J2000，这里按岁差归算到所选年代 */
-  const [epoch, setEpoch] = useState<EpochId>(DEFAULT_EPOCH);
+  /** 显示历元：星表本身仍是 J2000，这里按岁差归算到所选年代（与地址栏同步） */
+  const [epochRaw, setEpoch] = useUrlState("epoch", DEFAULT_EPOCH, (r) =>
+    EPOCHS.some((e) => e.id === r)
+  );
+  const epoch = epochRaw as EpochId;
   const view = useMemo(() => applyEpoch(sky, epoch), [sky, epoch]);
   const meanShift = useMemo(() => meanPrecessionShift(sky, epoch), [sky, epoch]);
 
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
   const [showMilky, setShowMilky] = useState(true);
+  const [showBodies, setShowBodies] = useState(true);
+  const [latRaw, setLatRaw] = useUrlState("lat", String(DEFAULT_LAT));
+  const lat = Number(latRaw) || DEFAULT_LAT;
+  const setLat = (v: number) => setLatRaw(String(v));
   const [showLabels, setShowLabels] = useState(true);
   const [showLines, setShowLines] = useState(true);
   const [innerAngle, setInnerAngle] = useState(0);
@@ -304,6 +342,21 @@ export default function SkyMap({ sky }: { sky: ChineseSky }) {
   const [live, setLive] = useState(true);
   const [clockMs, setClockMs] = useState(0);
   const { last, rotation, sun } = useSkyClock(sync, live, clockMs, setClockMs);
+
+  /** 日月五星，按内规分成两层随各自圆盘旋转 */
+  /** 内规 / 外规 / 天顶 / 地平线，全部随纬度重算 */
+  const geo = useMemo(() => siteGeometry(lat), [lat]);
+
+  const bodyLayers = useMemo(() => {
+    const inner: Body[] = [];
+    const outer: Body[] = [];
+    if (showBodies) {
+      for (const b of bodiesAtEpoch(clockMs, epoch)) {
+        (90 - b.dec <= lat ? inner : outer).push(b);
+      }
+    }
+    return { inner, outer };
+  }, [showBodies, clockMs, epoch, lat]);
 
   /** 同步开启时，两层统一由恒星时驱动（星空周日运动是一个整体） */
   const outerRot = sync ? rotation : outerAngle;
@@ -375,7 +428,7 @@ export default function SkyMap({ sky }: { sky: ChineseSky }) {
     const inner: { s: SkyStar; i: number }[] = [];
     const outer: { s: SkyStar; i: number }[] = [];
     view.stars.forEach((s, i) => {
-      (s.quji <= INNER_QJ ? inner : outer).push({ s, i });
+      (s.quji <= lat ? inner : outer).push({ s, i });
     });
 
     const innerLines: { a: Asterism; seg: number[] }[] = [];
@@ -385,11 +438,11 @@ export default function SkyMap({ sky }: { sky: ChineseSky }) {
         const ss = seg.map((si) => view.stars[si]).filter(Boolean);
         if (!ss.length) continue;
         const avg = ss.reduce((t, x) => t + x.quji, 0) / ss.length;
-        (avg <= INNER_QJ ? innerLines : outerLines).push({ a, seg });
+        (avg <= lat ? innerLines : outerLines).push({ a, seg });
       }
     }
     return { inner, outer, innerLines, outerLines };
-  }, [view]);
+  }, [view, lat]);
 
   const hiStars = useMemo(() => {
     const s = new Set<number>();
@@ -415,11 +468,11 @@ export default function SkyMap({ sky }: { sky: ChineseSky }) {
       const seg =
         `M${(x - s / 2).toFixed(2)} ${(y - s / 2).toFixed(2)}` +
         `h${s.toFixed(2)}v${s.toFixed(2)}h${(-s).toFixed(2)}z`;
-      if (90 - p.dec <= INNER_QJ) inner += seg;
+      if (90 - p.dec <= lat) inner += seg;
       else outer += seg;
     }
     return { inner, outer };
-  }, [epoch]);
+  }, [epoch, lat]);
 
   const ecliptic = useMemo(eclipticPath, []);
 
@@ -527,7 +580,7 @@ export default function SkyMap({ sky }: { sky: ChineseSky }) {
     drag.current = {
       active: true,
       mode: panMode ? "pan" : "rotate",
-      which: Math.hypot(x, y) <= R_INNER ? "inner" : "outer",
+      which: Math.hypot(x, y) <= geo.rInner ? "inner" : "outer",
       lastAngle: angleAt(e.clientX, e.clientY),
       lastX: e.clientX,
       lastY: e.clientY,
@@ -667,6 +720,44 @@ export default function SkyMap({ sky }: { sky: ChineseSky }) {
     return `${hh}h ${mm}m ${ss}s`;
   };
 
+  /** 日月五星标记 —— 坐标统一 toFixed，避免 SSR 浮点分歧 */
+  const renderBodies = (list: Body[], scale: number) => (
+    <g style={{ pointerEvents: "none" }}>
+      {list.map((b) => {
+        const [x, y] = toXY(b.ra, b.dec);
+        const r = b.id === "moon" ? 12 : 9;
+        return (
+          <g key={b.id} data-body={b.id}>
+            <circle
+              cx={x}
+              cy={y}
+              r={+(r * 2.1).toFixed(2)}
+              fill={b.color}
+              opacity={0.18}
+            />
+            <circle
+              cx={x}
+              cy={y}
+              r={+r.toFixed(2)}
+              fill={b.color}
+              stroke="#05070d"
+              strokeWidth={1.5}
+            />
+            <text
+              x={+(x + r + 4 / scale).toFixed(2)}
+              y={+(y + 3 / scale).toFixed(2)}
+              fontSize={+(14 / scale).toFixed(2)}
+              fill={b.color}
+              opacity={0.92}
+            >
+              {b.zh}
+            </text>
+          </g>
+        );
+      })}
+    </g>
+  );
+
   const labels = (list: { s: SkyStar; i: number }[], minMag: number, size: number) => (
     <g style={{ pointerEvents: "none" }}>
       {list
@@ -728,17 +819,17 @@ export default function SkyMap({ sky }: { sky: ChineseSky }) {
             </radialGradient>
             {/* 银河星尘用模糊合成连续的雾带 —— 比单纯堆点数更像银河 */}
             <filter id="milkyBlur" x="-15%" y="-15%" width="130%" height="130%">
-              <feGaussianBlur stdDeviation="2.6" />
+              <feGaussianBlur stdDeviation="3.4" />
             </filter>
           </defs>
 
           <circle r={R_MAX + 30} fill="url(#bgGrad)" />
 
           {/* —— 固定参考层：赤纬圈（内规/赤道/外规）—— */}
-          <circle r={R_INNER} fill="url(#innerGrad)" />
+          <circle r={geo.rInner} fill="url(#innerGrad)" />
           <circle
             className="draw"
-            r={R_INNER}
+            r={geo.rInner}
             fill="none"
             stroke="#e8c76a"
             strokeWidth={2.6}
@@ -756,7 +847,7 @@ export default function SkyMap({ sky }: { sky: ChineseSky }) {
           />
           <circle
             className="draw"
-            r={R_OUTER}
+            r={geo.rOuter}
             fill="none"
             stroke="#c9a227"
             strokeWidth={1.6}
@@ -776,7 +867,7 @@ export default function SkyMap({ sky }: { sky: ChineseSky }) {
           {/* 内外圈标注 */}
           <text
             x={0}
-            y={-R_INNER - 10}
+            y={-geo.rInner - 10}
             textAnchor="middle"
             fontSize={15}
             fill="#e8c76a"
@@ -787,7 +878,7 @@ export default function SkyMap({ sky }: { sky: ChineseSky }) {
           </text>
           <text
             x={0}
-            y={R_OUTER + 22}
+            y={geo.rOuter + 22}
             textAnchor="middle"
             fontSize={15}
             fill="#c9a227"
@@ -861,6 +952,8 @@ export default function SkyMap({ sky }: { sky: ChineseSky }) {
             />
             {showLabels && labels(layers.outer, 1.6, 13)}
 
+            {renderBodies(bodyLayers.outer, VIEW / vb.w)}
+
             {/* 太阳此刻所在（随天球一起旋转） */}
             {sync ? <SunMarker sun={sun} zoom={VIEW / vb.w} /> : null}
           </g>
@@ -885,11 +978,12 @@ export default function SkyMap({ sky }: { sky: ChineseSky }) {
               hiSet={hiStars}
               dimming={activeGroup != null}
             />
+            {renderBodies(bodyLayers.inner, VIEW / vb.w)}
             {showLabels && labels(layers.inner, 2.5, 12)}
           </g>
 
           {/* —— 观测者坐标（固定于图纸）：地平遮罩 · 子午 · 天顶 —— */}
-          {sync ? <ObserverFrame /> : null}
+          {sync ? <ObserverFrame geo={geo} /> : null}
 
           {/* 北极 */}
           <circle r={3.4} fill="#ffe9a8" />
@@ -989,8 +1083,63 @@ export default function SkyMap({ sky }: { sky: ChineseSky }) {
           label="银河"
           meta="银道面"
         />
+        <Toggle
+          checked={showBodies}
+          onChange={setShowBodies}
+          label="日月五星"
+          meta={
+            bodyLayers.inner.length + bodyLayers.outer.length > 0
+              ? `${bodyLayers.inner.length + bodyLayers.outer.length} 个`
+              : "—"
+          }
+        />
         <Toggle checked={showLines} onChange={setShowLines} label="星官连线" />
         <Toggle checked={showLabels} onChange={setShowLabels} label="亮星标注" />
+
+        <DockSection>观测地</DockSection>
+        <div className="chips">
+          {SITES.map((s0) => (
+            <Chip
+              key={s0.name}
+              active={Math.abs(lat - s0.lat) < 0.01}
+              onClick={() => setLat(s0.lat)}
+              title={`${s0.lat}°N`}
+            >
+              {s0.name}
+            </Chip>
+          ))}
+        </div>
+        <Slider
+          label="纬度"
+          value={lat}
+          display={`${lat.toFixed(1)}°N`}
+          min={5}
+          max={60}
+          step={0.1}
+          onChange={setLat}
+        />
+        <div className="hint">
+          内规 = 恒显圈（去极度 ≤ 纬度），外规 = 恒隐界；纬度越高拱极星区越大
+        </div>
+
+        <DockSection>导出</DockSection>
+        <button
+          className="btn"
+          onClick={() => {
+            const svg = svgRef.current;
+            if (!svg) return;
+            void exportSvgToPng(svg, {
+              size: 2400,
+              background: "#05070d",
+              filename: `huntianyi-planisphere-${epoch}-${lat.toFixed(1)}N.png`,
+              fontFamily: '"Songti SC", "Noto Serif CJK SC", serif',
+              viewBox: `${BASE_VB.x} ${BASE_VB.y} ${VIEW} ${VIEW}`,
+            }).catch((e) => console.error("导出失败", e));
+          }}
+        >
+          导出 PNG · 2400px
+        </button>
+        <div className="hint">按当前历元、纬度与旋转角导出整幅星图</div>
 
         <DockSection>视野</DockSection>
         <div className="hint">
@@ -1127,7 +1276,7 @@ export default function SkyMap({ sky }: { sky: ChineseSky }) {
           </div>
 
           <div className="tags">
-            {selStar.quji <= INNER_QJ ? (
+            {selStar.quji <= lat ? (
               <span className="tag">内圈 · 恒显</span>
             ) : (
               <span className="tag">外圈 · 二十八宿</span>

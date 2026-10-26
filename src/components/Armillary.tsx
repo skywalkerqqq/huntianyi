@@ -14,14 +14,26 @@ import {
   magToScale,
   raDecToVec3,
 } from "@/lib/sky";
-import { Chip, Dock, DockSection, Toggle } from "@/components/ui";
+import { Chip, Dock, DockSection, Slider, Toggle } from "@/components/ui";
 import { SkyClockPanel, useSkyClock } from "@/components/TimeSync";
 import { DEFAULT_EPOCH, EPOCHS, type EpochId } from "@/lib/astro";
-import { applyEpoch, meanPrecessionShift, precessList } from "@/lib/epoch";
+import { applyEpoch, bodiesAtEpoch, meanPrecessionShift, precessList } from "@/lib/epoch";
+import type { BodyId } from "@/lib/planets";
+import { downloadBlob, useUrlState } from "@/lib/export";
 import { milkyWayPoints } from "@/lib/milkyway";
 
 /** 观测地纬度（北宋开封 ≈ 34.8°N，苏颂水运仪象台所在） */
 const LATITUDE = 34.8;
+/** 历代都城纬度，用于演示「南巡所见星空不同」 */
+const SITES: { name: string; lat: number }[] = [
+  { name: "开封", lat: 34.8 },
+  { name: "长安", lat: 34.27 },
+  { name: "洛阳", lat: 34.62 },
+  { name: "北京", lat: 39.9 },
+  { name: "南京", lat: 32.06 },
+  { name: "杭州", lat: 30.25 },
+  { name: "广州", lat: 23.13 },
+];
 
 const starVertex = /* glsl */ `
   uniform float uSize;
@@ -81,6 +93,25 @@ const milkyFragment = /* glsl */ `
 
 /** 固定 seed 生成一次，切历元时只做岁差重算 */
 const MILKY_BASE = milkyWayPoints(9000);
+
+/** 日月五星的绘制顺序与半径（月亮给得最大，因为它本来就最抢眼） */
+const BODY_ORDER: BodyId[] = ["moon", "mercury", "venus", "mars", "jupiter", "saturn"];
+const BODY_COLOR: Record<BodyId, string> = {
+  moon: "#e9eef7",
+  mercury: "#9fb4c9",
+  venus: "#ffe6b0",
+  mars: "#ff8f6b",
+  jupiter: "#ffd9a0",
+  saturn: "#e8d18a",
+};
+const BODY_R: Record<BodyId, number> = {
+  moon: 0.115,
+  mercury: 0.07,
+  venus: 0.085,
+  mars: 0.075,
+  jupiter: 0.095,
+  saturn: 0.085,
+};
 
 function buildMilkyWay(points: { ra: number; dec: number; w: number }[]) {
   const n = points.length;
@@ -267,13 +298,20 @@ export default function Armillary({ sky }: { sky: ChineseSky }) {
    * 显示历元。数据始终是 J2000 星表（唯一真值），历元只决定「按哪一年的天空画」——
    * 北宋 1052 是苏颂星图年代，也是本项目的立题基点。
    */
-  const [epoch, setEpoch] = useState<EpochId>(DEFAULT_EPOCH);
+  const [epochRaw, setEpoch] = useUrlState("epoch", DEFAULT_EPOCH, (r) =>
+    EPOCHS.some((e) => e.id === r)
+  );
+  const epoch = epochRaw as EpochId;
   const view = useMemo(() => applyEpoch(sky, epoch), [sky, epoch]);
   /** 相对 J2000 的全表平均位移，给用户一个量级感知 */
   const meanShift = useMemo(() => meanPrecessionShift(sky, epoch), [sky, epoch]);
 
   const [showStars, setShowStars] = useState(true);
   const [showMilky, setShowMilky] = useState(true);
+  const [showBodies, setShowBodies] = useState(true);
+  const [latRaw, setLatRaw] = useUrlState("lat", String(LATITUDE));
+  const lat = Number(latRaw) || LATITUDE;
+  const setLat = (v: number) => setLatRaw(String(v));
   const [showLines, setShowLines] = useState(true);
   const [showMansion, setShowMansion] = useState(true);
   const [showRings, setShowRings] = useState(true);
@@ -316,8 +354,10 @@ export default function Armillary({ sky }: { sky: ChineseSky }) {
   }, [sky]);
 
   const refs = useRef<{
+    renderer?: THREE.WebGLRenderer;
     stars?: THREE.Points;
     milky?: THREE.Points;
+    bodyMeshes?: Map<BodyId, THREE.Mesh>;
     posAttr?: THREE.BufferAttribute;
     hiAttr?: THREE.BufferAttribute;
     lines?: THREE.LineSegments;
@@ -342,6 +382,13 @@ export default function Armillary({ sky }: { sky: ChineseSky }) {
   const [clockMs, setClockMs] = useState(0);
   const { last, sun } = useSkyClock(sync, live, clockMs, setClockMs);
 
+  /** 日月五星：按「历元年 + 校时时刻」定位，已岁差到该历元 */
+  const bodies = useMemo(
+    () => (showBodies ? bodiesAtEpoch(clockMs, epoch) : []),
+    [showBodies, clockMs, epoch]
+  );
+
+
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -359,7 +406,11 @@ export default function Armillary({ sky }: { sky: ChineseSky }) {
     const portrait = container.clientWidth / container.clientHeight < 0.85;
     camera.position.set(0, 5.5, portrait ? 19.5 : 13);
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    const renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      // 导出 PNG 需要读回像素，默认缓冲在合成后会被清空
+      preserveDrawingBuffer: true,
+    });
     renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setClearColor(0x06070c, 1);
@@ -443,7 +494,33 @@ export default function Armillary({ sky }: { sky: ChineseSky }) {
     sunBody.visible = false;
     skyGroup.add(sunBody);
 
+    // 日月五星标记：本体 + 加法混合光晕
+    const bodyMeshes = new Map<BodyId, THREE.Mesh>();
+    for (const id of BODY_ORDER) {
+      const color = BODY_COLOR[id];
+      const rr = BODY_R[id];
+      const core = new THREE.Mesh(
+        new THREE.SphereGeometry(rr, 16, 16),
+        new THREE.MeshBasicMaterial({ color })
+      );
+      const halo = new THREE.Mesh(
+        new THREE.SphereGeometry(rr * 2.3, 14, 14),
+        new THREE.MeshBasicMaterial({
+          color,
+          transparent: true,
+          opacity: 0.2,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        })
+      );
+      core.add(halo);
+      core.visible = false;
+      skyGroup.add(core);
+      bodyMeshes.set(id, core);
+    }
+
     refs.current = {
+      renderer,
       stars,
       milky,
       posAttr,
@@ -453,6 +530,7 @@ export default function Armillary({ sky }: { sky: ChineseSky }) {
       skyGroup,
       fixedGroup,
       sun: sunBody,
+      bodyMeshes,
     };
 
     const controls = new OrbitControls(camera, renderer.domElement);
@@ -531,6 +609,15 @@ export default function Armillary({ sky }: { sky: ChineseSky }) {
       (mansionLines.material as THREE.Material).dispose();
       milky.geometry.dispose();
       (milky.material as THREE.Material).dispose();
+      bodyMeshes.forEach((m) => {
+        m.geometry.dispose();
+        (m.material as THREE.Material).dispose();
+        m.children.forEach((c) => {
+          const cm = c as THREE.Mesh;
+          cm.geometry?.dispose?.();
+          (cm.material as THREE.Material)?.dispose?.();
+        });
+      });
       const sun = refs.current.sun;
       if (sun) {
         sun.geometry.dispose();
@@ -607,6 +694,23 @@ export default function Armillary({ sky }: { sky: ChineseSky }) {
     r.milky = mk;
   }, [view, epoch]);
 
+  /** 日月五星位置：随校时时刻或历元变化 */
+  useEffect(() => {
+    const meshes = refs.current.bodyMeshes;
+    if (!meshes) return;
+    const byId = new Map(bodies.map((b) => [b.id, b]));
+    for (const [id, mesh] of meshes) {
+      const b = byId.get(id);
+      if (!b) {
+        mesh.visible = false;
+        continue;
+      }
+      mesh.visible = true;
+      const [x, y, z] = raDecToVec3(b.ra, b.dec, CELESTIAL_R * 0.992);
+      mesh.position.set(x, y, z);
+    }
+  }, [bodies]);
+
   // 显示开关
   useEffect(() => {
     const r = refs.current;
@@ -615,9 +719,12 @@ export default function Armillary({ sky }: { sky: ChineseSky }) {
     if (r.lines) r.lines.visible = showLines;
     if (r.mansionLines) r.mansionLines.visible = showMansion;
     if (r.skyGroup) {
+      const bodySet = new Set(r.bodyMeshes?.values() ?? []);
       r.skyGroup.children.forEach((c) => {
-        // 太阳标记不随「浑仪环系」一并隐藏
-        if (c instanceof THREE.Mesh && c !== r.sun) c.visible = showRings;
+        // 太阳与日月五星标记不随「浑仪环系」一并隐藏
+        if (c instanceof THREE.Mesh && c !== r.sun && !bodySet.has(c)) {
+          c.visible = showRings;
+        }
       });
     }
     if (r.fixedGroup) r.fixedGroup.visible = showRings;
@@ -628,9 +735,9 @@ export default function Armillary({ sky }: { sky: ChineseSky }) {
     if (refs.current.skyGroup) {
       refs.current.skyGroup.rotation.x = axisUp
         ? 0
-        : -((90 - LATITUDE) * Math.PI) / 180;
+        : -((90 - lat) * Math.PI) / 180;
     }
-  }, [axisUp]);
+  }, [axisUp, lat]);
 
   /**
    * 周日运动：天球绕极轴自转。
@@ -722,6 +829,25 @@ export default function Armillary({ sky }: { sky: ChineseSky }) {
           meta="银道面"
         />
         <Toggle
+          checked={showBodies}
+          onChange={setShowBodies}
+          label="日月五星"
+          meta={bodies.length ? `${bodies.length} 个` : "—"}
+        />
+        {showBodies && bodies.length > 0 ? (
+          <div className="readout">
+            {bodies.map((b) => (
+              <div key={b.id}>
+                <span>{b.zh}</span>
+                <b>
+                  λ {b.lambda.toFixed(1)}° · β {b.beta >= 0 ? "+" : "−"}
+                  {Math.abs(b.beta).toFixed(1)}°
+                </b>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        <Toggle
           checked={showLines}
           onChange={setShowLines}
           label="星官连线"
@@ -735,6 +861,52 @@ export default function Armillary({ sky }: { sky: ChineseSky }) {
         <Toggle checked={showRings} onChange={setShowRings} label="浑仪环系" />
         <Toggle checked={axisUp} onChange={setAxisUp} label="天轴摆正" />
         <div className="hint">摆正后天轴垂直于视图，呈赤道视角</div>
+
+        <DockSection>观测地</DockSection>
+        <div className="chips">
+          {SITES.map((s0) => (
+            <Chip
+              key={s0.name}
+              active={Math.abs(lat - s0.lat) < 0.01}
+              onClick={() => setLat(s0.lat)}
+              title={`${s0.lat}°N`}
+            >
+              {s0.name}
+            </Chip>
+          ))}
+        </div>
+        <Slider
+          label="纬度"
+          value={lat}
+          display={`${lat.toFixed(1)}°N`}
+          min={0}
+          max={60}
+          step={0.1}
+          onChange={setLat}
+        />
+        <div className="hint">
+          天轴与地平的夹角等于纬度：纬度越高，拱极星区越大，恒显圈内星官越多
+        </div>
+
+        <DockSection>导出</DockSection>
+        <button
+          className="btn"
+          onClick={() => {
+            const canvas = refs.current.renderer?.domElement;
+            if (!canvas) return;
+            canvas.toBlob((b) => {
+              if (b) {
+                downloadBlob(
+                  b,
+                  `huntianyi-armillary-${epoch}-${lat.toFixed(1)}N.png`
+                );
+              }
+            }, "image/png");
+          }}
+        >
+          导出 PNG · 当前视角
+        </button>
+        <div className="hint">按当前相机视角与图层开关导出</div>
 
         <SkyClockPanel
           sync={sync}

@@ -187,6 +187,8 @@ export interface Epoch {
   /** 图上/面板里的补充说明 */
   note: string;
   jd: number;
+  /** 该历元对应的公历年（用于把「此刻的钟点」搬到这个年份） */
+  year: number;
 }
 
 /**
@@ -201,18 +203,21 @@ export const EPOCHS: Epoch[] = [
     label: "北宋 1052",
     note: "苏颂《新仪象法要》星图年代 · 儒略历",
     jd: yearToJD(1052),
+    year: 1052,
   },
   {
     id: "j2000",
     label: "J2000",
     note: "现代星表原历元",
     jd: J2000_JD,
+    year: 2000,
   },
   {
     id: "now",
     label: "当代",
     note: "2026 年初，用于与今夜空对照",
     jd: yearToJD(2026),
+    year: 2026,
   },
 ];
 
@@ -227,4 +232,20 @@ export function epochYearLabel(jd: number): string {
   const year = 2000 + ((jd - J2000_JD) / 365.2422);
   const y = Math.round(year);
   return y < 0 ? `公元前 ${-y + 1} 年` : `公元 ${y} 年`;
+}
+
+/**
+ * 把某个时刻的「月-日-时-分」搬到指定年份，得到该年内的对应时刻。
+ *
+ * 用途：星图按所选历元（如北宋 1052）绘制，那么日月五星也必须落在**同一个年份**，
+ * 否则行星会与星位错开十几度。用户在面板上拨的钟点则保留 —— 于是可以看
+ * 「北宋这一夜的金木水火土」。
+ */
+export function shiftToYear(ms: number, year: number): number {
+  const d = new Date(ms);
+  const out = new Date(
+    Date.UTC(year, d.getUTCMonth(), d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes())
+  );
+  out.setUTCFullYear(year); // 处理 year < 100 时 Date 自动加 1900 的坑
+  return out.getTime();
 }

@@ -23,8 +23,8 @@ const { launch } = require("./_pw.cjs");
     const inner = document.querySelector("g.ring-inner");
     return {
       stars: document.querySelectorAll("[data-si]").length,
-      innerStars: inner ? inner.querySelectorAll("circle").length : 0,
-      outerStars: outer ? outer.querySelectorAll("circle").length : 0,
+      innerStars: inner ? inner.querySelectorAll("[data-si]").length : 0,
+      outerStars: outer ? outer.querySelectorAll("[data-si]").length : 0,
       polylines: document.querySelectorAll("polyline").length,
       outerT: outer?.getAttribute("transform"),
       innerT: inner?.getAttribute("transform"),
