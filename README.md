@@ -1,131 +1,120 @@
-# 浑天仪 · 三垣二十八宿
+<div align="right">
+  <b>English</b> &nbsp;·&nbsp; <a href="README.zh-CN.md">简体中文</a>
+</div>
 
-以**真实古代星官体系**重建的交互式星图。两套视图共享同一套坐标与授时内核：
+# 浑天仪 · Huntianyi
 
-| 视图 | 路由 | 形制 | 渲染 |
-| --- | --- | --- | --- |
-| 浑天仪 | `/` | 三维天球 + 六合仪环系（子午 / 地平 / 赤道 / 黄道 / 白道 / 四游） | Three.js + 自定义粒子着色器 |
-| 盖天图 | `/flat` | 平面极坐标星图，双圈可旋转（内规恒显圈 / 外规恒隐界），苏州石刻天文图形制 | React + SVG |
+**An interactive reconstruction of the Chinese sky — the armillary sphere, the Three Enclosures and the Twenty-Eight Mansions — computed from real star catalogues, not stylised artwork.**
 
-观测地取**北宋开封（34.8°N, 114.307°E）**——苏颂水运仪象台所在，天轴倾角与内规半径均由此纬度决定。
+Every star sits at its measured position, precessed to the epoch of the Northern Song (1052 CE), when Su Song built his astronomical clock tower in Kaifeng. The same coordinate kernel drives both a 3D armillary sphere and a flat planisphere in the manner of the Suzhou stone star chart.
 
----
+![Armillary sphere with the Milky Way and the Sun, Moon and five planets](docs/images/armillary.jpg)
 
-## 数据链（全部真实，可复现）
+<p align="center"><em>Armillary sphere — epoch 1052 CE, latitude 34.8°N, Milky Way and the seven luminaries visible</em></p>
 
-星位与星官均不来自手工录入，由 `scripts/export_sky.mjs` 从公开权威源合成：
+## Features
 
-| 数据 | 来源 | 用途 |
-| --- | --- | --- |
-| 星官与连线 | Stellarium `skycultures/chinese/index.json` | 312 星官、连线拓扑、二十八宿距星（HIP 编号） |
-| 恒星位置 | npm `star-catalog-lite`（TSC1 亮星星表，基于 Gaia DR3 / Hipparcos / BSC5） | 1386 颗星的赤经赤纬与视星等 |
-| 中文星名与分区 | Stellarium `star_names.zh_CN.fab` | 100% 中文星名；`###紫微垣` 等分区标注作为三垣归属依据 |
+| | |
+| --- | --- |
+| **Two coordinated views** | A 3D armillary sphere with six rings (meridian, horizon, equator, ecliptic, lunar path, four-motion ring) and a 2D planisphere with two independently rotating discs |
+| **Real precession** | IAU 1976 three-angle precession, switchable between **Northern Song 1052**, **J2000** and **present day** |
+| **Authentic catalogue** | 1,386 stars, 312 asterisms, 28 lunar mansions — every star carries its traditional Chinese name |
+| **Milky Way** | Generated from the true galactic plane (galactic centre and north galactic pole anchors), not a decorative band |
+| **Sun, Moon, five planets** | Planetary positions from JPL/Standish elements; the Moon from Meeus. Retargeted to the selected epoch, so you see the sky of a Song-dynasty night |
+| **Observable latitude** | Seven historical capitals (Kaifeng, Chang'an, Luoyang, Beijing, Nanjing, Hangzhou, Guangzhou) or any latitude by slider |
+| **Sidereal time** | The sphere rotates by true local sidereal time; any moment can be dialled in, and dragging the chart moves the clock |
+| **Shareable & exportable** | Epoch and latitude live in the URL; both views export PNG |
 
-产出 `src/data/chineseSky.json`（244 KB）。重新生成：
+<p align="center">
+  <img src="docs/images/planisphere.jpg" alt="Planisphere at 39.9 degrees north" width="49%">
+  <img src="docs/images/armillary.jpg" alt="Armillary sphere" width="49%">
+</p>
+
+## Quick start
 
 ```bash
-npm run data:sky     # = node scripts/export_sky.mjs
+git clone https://github.com/skywalkerqqq/huntianyi.git
+cd huntianyi
+npm install
+npm run dev       # http://localhost:8771
 ```
 
-坐标校验：5 颗亮星与星表比对 Δ < 0.003°。
+```bash
+npm run build      # production build (fully static)
+npm start          # serve the build
+npm run typecheck  # tsc --noEmit
+npm run test:astro # astronomy assertions (GMST, solar position, precession)
+```
 
-## 天文内核
+Requires Node.js 20+.
 
-`src/lib/astro.ts` 为纯函数，系数取自 IAU 1982 恒星时决议与 Meeus《Astronomical Algorithms》：
+## Why the numbers matter
 
-- `gmstDeg()` — 格林尼治平恒星时（Meeus 12.4），J2000 基准校验通过
-- `sunRaDec()` — 太阳视位置低精度算法，误差 < 0.01°
-- `rotationFromLast()` — **平面盖图与三维浑天仪共用同一旋转角 `rotation = 270° − LAST`**（已交叉验算：±1 小时 = −15.041°，按恒星日 86164.0905 s 而非太阳日）
+This is the part that separates a star map from a reconstruction.
 
-星空自转按真实恒星时驱动，可任意时刻校正（`TimeSync.tsx`）；盖图在同步开启时额外绘制地平线遮罩（`cot p = −cot φ · cos(ψ − 270°)`）、子午线、天顶与太阳实时位置，拖动星图即拨动时刻。
+### Precession
 
-## 目录
+The catalogue is stored at J2000 — its only ground truth. The Song sky is ~950 years earlier, and precession is not negligible at that distance. Recomputed with IAU 1976:
+
+| Star | J2000 | 1052 CE | shift |
+| --- | --- | --- | --- |
+| 勾陈一 (Polaris) | 0.736° from pole | **5.916°** | 5.38° |
+| 角宿一 (Spica) | 101.161° | 96.065° | 13.21° |
+| 心宿二 (Antares) | 116.432° | 113.807° | 13.18° |
+| All 1,386 stars | — | — | **mean 10.70°, max 13.22°** |
+
+So in the 1052 sky Polaris stands nearly six degrees from the pole — which is what makes the Song records ("the pole star is a little over three degrees from the pole") intelligible. The circumpolar circle moves with it: **147** stars fall inside it at Kaifeng, versus 159 for uncorrected J2000 positions.
+
+### Planetary reference frame
+
+The Standish elements give heliocentric positions in the **J2000-fixed** frame, while the classical `sunRaDec()` formula yields ecliptic longitude referred to the equinox of date. The self-check is to back-compute the Sun's longitude from the Earth elements and compare: Δ = 0.005° at J2000, but 0.699° in 1950 — and 50 years × 50.29″/yr = 0.698°. The discrepancy is *exactly* precession. The coefficients are correct; the frame simply has to be rotated.
+
+Planets therefore go through the same precession as the star catalogue, and `shiftToYear()` moves the clock's month and day into the epoch's year — so the planets you see really are those of a night in 1052.
+
+### Sidereal time
+
+`rotation = 270° − LAST` on the planisphere and `rotation.y = −(90° + LAST)` on the sphere produce the same sky. One clock hour moves the sky by 15.041°, not 15° — the sidereal day is 86164.0905 s, not 86400 s.
+
+## Data
+
+| Source | What it provides |
+| --- | --- |
+| [Stellarium](https://github.com/Stellarium/stellarium) Chinese sky culture | 312 asterisms, line topology, 28 determinative stars (HIP), Chinese star names |
+| [`star-catalog-lite`](https://www.npmjs.com/package/star-catalog-lite) | TSC1 bright-star catalogue (Gaia DR3 / Hipparcos / BSC5) — 1,386 matched stars |
+
+`src/data/chineseSky.json` is generated, never hand-edited:
+
+```bash
+npm run data:sky   # scripts/export_sky.mjs
+```
+
+Position check: five bright stars agree with the catalogue to Δ < 0.003°.
+
+## Repository layout
 
 ```
 src/
-  app/
-    page.tsx            浑天仪视图
-    flat/page.tsx       盖天图视图
-    globals.css         设计系统（色板 / 动效令牌 / 响应式）
-  components/
-    Armillary.tsx       三维天球、环系、粒子着色器、拾取
-    SkyMap.tsx          平面星图：投影、双圈旋转、缩放平移
-    TimeSync.tsx        恒星时时钟 hook 与校时面板
-    Shell.tsx           导航骨架
-    ui.tsx              Dock / Toggle / Slider / Chip
-  lib/
-    astro.ts            恒星时与太阳视位置
-    sky.ts              坐标变换、配色、星等映射
-  data/
-    chineseSky.json     合成的星表（由脚本生成，勿手改）
+  app/           routes: / (armillary) and /flat (planisphere)
+  components/    Armillary.tsx, SkyMap.tsx, TimeSync.tsx, Shell.tsx, ui.tsx
+  lib/           astro.ts (sidereal time, precession), epoch.ts, planets.ts,
+                 milkyway.ts, export.ts, sky.ts
+  data/          chineseSky.json — generated catalogue
 scripts/
-  export_sky.mjs        数据管线：原始源 → chineseSky.json
-  data/                 原始数据与抓取脚本
-  test_astro.mjs        天文算法单测（对照 Meeus 例 12.a 与二分二至）
-  verify*.cjs           端到端回归（Playwright，截图写入 _archive/screenshots）
-_archive/               调试截图与一次性探测脚本（不入版本库）
+  export_sky.mjs data pipeline: raw sources → chineseSky.json
+  data/          raw Stellarium sources
+  test_astro.mjs astronomy assertions
+  verify*.cjs    end-to-end regression (Playwright)
+docs/            design notes and screenshots
 ```
 
-## 开发
+## Known limitations
 
-```bash
-npm install
-npm run dev        # http://localhost:8771
-npm run build      # 生产构建
-npm run typecheck  # tsc --noEmit
-npm run test:astro # 天文算法校验
-```
+- **No three-school colour coding** (Shi / Gan / Wu Xian — vermilion, ink and yellow). The authoritative dataset, the China-VO "asterism master table" carrying a `shu shi` (school) field, is offline: every file on that endpoint returns 404 and no archive exists. Stellarium's own `chinese_chenzhuo` culture encodes only region in its ids (P / S / H / numeral), not school. Reconstructing it needs manual work from the *Jin Shu* and *Kaiyuan Zhanjing*, so it is left for later rather than guessed.
+- **Planisphere performance.** 1,386 stars, 420 polylines, the Milky Way path and the luminaries all live in SVG; page transitions take ~0.7–1.0 s. Moving the star layer to Canvas is the next step.
+- **Accuracy.** Planets ~10′, Moon ~0.3° — enough for positional display, not for eclipse timing or occultation work.
 
-> 依赖装不上的话：`.npmrc` 已固化 `registry=npmmirror.com`（直连 npmjs 在此网络环境会 CONNECT 502）。
-> 需要把构建产物隔离到独立目录时，用 `NEXT_DIST_DIR=build-xxx npm run build`。
+## License
 
-## 历元与岁差
+Code is **MIT © skywalkerqqq** — see [LICENSE](LICENSE).
 
-星表存的是 **J2000 位置**（唯一真值），显示时按所选历元现算岁差改正（IAU 1976 三转角，Meeus 21.2）。1582 年以前按儒略历计历。
-
-| 历元 | 说明 |
-| --- | --- |
-| 北宋 1052（默认） | 苏颂《新仪象法要》星图年代，本项目的立题基点 |
-| J2000 | 现代星表原历元 |
-| 当代 | 2026 年初，用于与今夜星空对照 |
-
-实测位移（`npm run test:astro` 已锁死这三个数）：
-
-- 全表 1386 星平均位移 **10.70°**，中位 11.96°，最大 13.22°
-- 勾陈一（今北极星）去极度 **0.736° → 5.916°** —— 北宋的北极星离极近 6°，与宋人「北极星离极三度有余」的记载对照才有意义
-- 角宿一 13.21°、心宿二 13.18°、娄宿一 13.07°
-
-切换历元只重算坐标，不重建 WebGL 场景，相机姿态保持不变。二十八宿的距星同样随岁差归算，宿度经线跟着走。
-
-## 银河
-
-按真实银道面生成，不是贴图：由银心（α=266.4051°, δ=−28.9362°）与银河北极（α=192.8595°, δ=+27.1283°）构造正交基，把银道坐标 (l, b) 变换到赤道坐标。银纬按 σ≈7° 的正态分布收拢在银道面，银心方向加权增亮，|b| < 2.5° 处压暗模拟暗尘带。
-
-三维用 9000 点自定义粒子着色器，盖图用 2600 点合成单条 `<path>`（只占一个 DOM 节点），两者都随历元做岁差、随天球自转。随机数用固定 seed 的 mulberry32——服务端与客户端必须得到同一组点，否则会触发 hydration 分歧。
-
-## 日月五星
-
-行星用 JPL/Standish《Keplerian Elements for Approximate Positions of the Major Planets》1800–2050 历元根数 + 开普勒方程（黄经误差约 10′）；月球用 Meeus 47 章简化式（7 个主要周期项，误差约 0.3°）。
-
-两处关键处理：
-
-1. **参考系**。行星根数给的是 J2000 固定参考系坐标，与星表同源，因此必须做**同一次岁差**才能落在同一片星空上。自检方式很直接：用地球根数反推太阳黄经，与 `sunRaDec()` 比较——J2000 时 Δ=0.005°，1950 年 Δ=0.699°，而 50 年 × 50.29″/年 = 0.698°，**偏差恰好等于岁差**，证明系数无误、只差一次坐标变换。
-2. **年份对齐**。星图按所选历元绘制，行星也必须落在同一年，否则会与星位错开十几度。`shiftToYear()` 把「月-日-时」搬到历元年，于是可以看「北宋 1052 年这一夜的金木水火土」。
-
-## 观测地
-
-纬度决定三件事：天轴与地平的夹角、恒显圈半径（去极度 ≤ 纬度）、天顶位置。两视图均可调，预置开封 / 长安 / 洛阳 / 北京 / 南京 / 杭州 / 广州七座古都。
-
-实测量化：开封 34.8°N 恒显圈内 147 星，北京 39.9°N 增至 186 星——纬度每升高 1°，恒显圈多圈进约 8 颗。
-
-## 分享与导出
-
-历元与纬度写入地址栏（`?epoch=song&lat=34.8`），带参访问可完整复原。刻意不用 `useSearchParams()`，那会把页面转成动态渲染、丢掉静态预渲染；改为「首帧用默认值 → 挂载后读地址栏 → 变更时 replaceState」。
-
-盖图可导出 2400px PNG（SVG 序列化后经 canvas 编码，渐变、滤镜、文字一并保留）；浑天仪导出当前相机视角。
-
-## 已知局限
-
-1. **没有石氏/甘氏/巫咸三家星配色** —— 数据源确证不可得。国家虚拟天文台「中国古星表之星官总表」曾提供 `属氏` 字段（石氏/甘氏/巫咸氏），但该站的数据文件现已整体下线（`xingguan.csv`、`xings.csv`、`hip.csv` 全部 404），Web Archive 亦无存档；Stellarium 的中国星空文化（含新增的 `chinese_chenzhuo` 陈卓三家星官图）其星官字段只有 id/lines/common_name，id 前缀是分区码（P=紫微、S=太微、H=天市、数字=宿），不含三家归属。此项目前只能从《晋书·天文志》《开元占经》等文献整理，宁可暂缺，不编造。
-2. **盖图 SVG 层元素较多**（1386 星 + 420 连线 + 1000 点银河路径 + 日月五星）。页面切换实测 747 / 1015 ms，比加入银河与天体前（457 / 950 ms，更早为 242 / 134 ms）明显变慢。下一步应把星点层迁 Canvas 或按需懒加载银河。
-3. 行星精度约 10′、月球约 0.3°，用于标位足够，但不足以支撑需要精确到分的天象计算（日月食时刻、掩星等）。
+The astronomical culture data under `scripts/data/` and the derived `src/data/chineseSky.json` originate from the Stellarium project and remain under their upstream terms; they are **not** covered by the MIT license above. See [LICENSE](LICENSE) for details.

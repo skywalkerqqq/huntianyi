@@ -4,12 +4,11 @@
  * 查找顺序：
  *   1. 项目内依赖（npm i -D playwright）
  *   2. 环境变量 PLAYWRIGHT_MODULE 指定的路径
- *   3. 常见的全局安装位置（含 WorkBuddy 托管 Node 的 workspace）
+ *   3. 常见的全局安装位置
  *
  * 浏览器一律用系统 Chrome（swiftshader 软渲染，便于无 GPU 环境跑 WebGL）。
  */
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 
 const CANDIDATES = [
@@ -17,7 +16,6 @@ const CANDIDATES = [
   process.env.PLAYWRIGHT_MODULE,
   path.join(process.env.APPDATA || "", "npm", "node_modules", "playwright"),
   path.join(process.env.LOCALAPPDATA || "", "npm", "node_modules", "playwright"),
-  path.join(os.homedir(), ".workbuddy/binaries/node/workspace/node_modules/playwright"),
   "/usr/lib/node_modules/playwright",
   "/usr/local/lib/node_modules/playwright",
 ].filter(Boolean);
