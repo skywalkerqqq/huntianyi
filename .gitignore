@@ -1,0 +1,28 @@
+# 依赖
+node_modules/
+.pnpm-store/
+
+# Next.js 构建产物
+.next/
+out/
+build/
+build-p*/
+.next-*/
+*.tsbuildinfo
+next-env.d.ts
+
+# 归档区：调试截图、一次性探测脚本（可重新生成，不入库）
+_archive/
+
+# 脚本产生的截图
+scripts/*.png
+
+# 环境
+.env
+.env*.local
+.DS_Store
+Thumbs.db
+
+# 编辑器
+.vscode/
+.idea/

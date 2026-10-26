@@ -1,0 +1,32 @@
+{
+  "name": "huntianyi",
+  "version": "1.0.0",
+  "private": true,
+  "description": "浑天仪 · 三垣二十八宿 —— 基于真实恒星表与北宋开封观测地纬度的中国古代星空可视化",
+  "scripts": {
+    "dev": "next dev --turbo -p 8771",
+    "build": "next build",
+    "start": "next start -p 8771",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "data:sky": "node scripts/export_sky.mjs",
+    "test:astro": "node scripts/test_astro.mjs"
+  },
+  "dependencies": {
+    "next": "^15.1.6",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "star-catalog-lite": "^1.2.0",
+    "three": "^0.171.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/three": "^0.171.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
