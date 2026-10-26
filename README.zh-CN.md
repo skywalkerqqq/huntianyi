@@ -119,4 +119,4 @@ docs/            设计笔记与截图
 
 代码为 **MIT © skywalkerqqq**，见 [LICENSE](LICENSE)。
 
-`scripts/data/` 下的天文文化数据与衍生的 `src/data/chineseSky.json` 来自 Stellarium 项目，遵循其上游许可，**不**包含在上面这份 MIT 许可内。详见 [LICENSE](LICENSE)。
+`scripts/data/` 下的天文文化数据与衍生的 `src/data/chineseSky.json` 来自 Stellarium 项目，遵循其上游许可，**不**包含在上面这份 MIT 许可内。逐项说明见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。

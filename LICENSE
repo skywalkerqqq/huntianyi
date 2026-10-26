@@ -19,15 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-Third-party data
-----------------
-The astronomical culture data under `scripts/data/` (Stellarium Chinese sky
-culture: asterism definitions, line topology, Chinese star names) and the
-derived file `src/data/chineseSky.json` originate from the Stellarium project
-(https://github.com/Stellarium/stellarium). They are distributed under the
-upstream Stellarium license terms and are NOT covered by the MIT license above.
-Please consult the Stellarium repository for the exact terms before
-redistributing those files.

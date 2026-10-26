@@ -117,4 +117,4 @@ docs/            design notes and screenshots
 
 Code is **MIT © skywalkerqqq** — see [LICENSE](LICENSE).
 
-The astronomical culture data under `scripts/data/` and the derived `src/data/chineseSky.json` originate from the Stellarium project and remain under their upstream terms; they are **not** covered by the MIT license above. See [LICENSE](LICENSE) for details.
+The astronomical culture data under `scripts/data/` and the derived `src/data/chineseSky.json` originate from the Stellarium project and remain under their upstream terms; they are **not** covered by the MIT license above. See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for the full breakdown.
