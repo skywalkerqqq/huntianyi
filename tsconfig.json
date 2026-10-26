@@ -29,17 +29,10 @@
     }
   },
   "include": [
+    "next-env.d.ts",
     "**/*.ts",
     "**/*.tsx",
     ".next/types/**/*.ts",
-    "build-p1/types/**/*.ts",
-    "build-p2/types/**/*.ts",
-    "build-p3/types/**/*.ts",
-    "build-p4/types/**/*.ts",
-    "build-p5/types/**/*.ts",
-    "build-p6/types/**/*.ts",
-    "build/types/**/*.ts",
-    "next-env.d.ts",
     ".next-prod/types/**/*.ts"
   ],
   "exclude": [
