@@ -37,9 +37,10 @@
     "build-p3/types/**/*.ts",
     "build-p4/types/**/*.ts",
     "build-p5/types/**/*.ts",
+    "build-p6/types/**/*.ts",
     "build/types/**/*.ts",
     "next-env.d.ts",
-    "build-p6/types/**/*.ts"
+    ".next-prod/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"

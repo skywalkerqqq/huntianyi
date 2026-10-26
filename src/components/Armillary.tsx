@@ -10,13 +10,15 @@ import {
   QUADRANT_COLORS,
   type Asterism,
   type ChineseSky,
-  type SkyStar,
   groupKey,
   magToScale,
   raDecToVec3,
 } from "@/lib/sky";
 import { Chip, Dock, DockSection, Toggle } from "@/components/ui";
 import { SkyClockPanel, useSkyClock } from "@/components/TimeSync";
+import { DEFAULT_EPOCH, EPOCHS, type EpochId } from "@/lib/astro";
+import { applyEpoch, meanPrecessionShift, precessList } from "@/lib/epoch";
+import { milkyWayPoints } from "@/lib/milkyway";
 
 /** 观测地纬度（北宋开封 ≈ 34.8°N，苏颂水运仪象台所在） */
 const LATITUDE = 34.8;
@@ -49,6 +51,64 @@ const starFragment = /* glsl */ `
 function hexToVec3(hex: string): [number, number, number] {
   const c = new THREE.Color(hex);
   return [c.r, c.g, c.b];
+}
+
+/* —— 银河：按真实银道面生成的星尘，不是贴图 —— */
+
+const milkyVertex = /* glsl */ `
+  uniform float uSize;
+  attribute float aW;
+  varying float vW;
+  void main() {
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    gl_Position = projectionMatrix * mv;
+    gl_PointSize = uSize * (0.35 + aW) / -mv.z;
+    vW = aW;
+  }
+`;
+
+const milkyFragment = /* glsl */ `
+  varying float vW;
+  void main() {
+    float d = length(gl_PointCoord - vec2(0.5));
+    if (d > 0.5) discard;
+    float a = pow(max(0.0, 1.0 - d * 2.0), 2.2);
+    vec3 cold = vec3(0.46, 0.55, 0.82);
+    vec3 warm = vec3(0.86, 0.80, 0.68);
+    gl_FragColor = vec4(mix(cold, warm, vW), a * 0.22 * (0.3 + vW));
+  }
+`;
+
+/** 固定 seed 生成一次，切历元时只做岁差重算 */
+const MILKY_BASE = milkyWayPoints(9000);
+
+function buildMilkyWay(points: { ra: number; dec: number; w: number }[]) {
+  const n = points.length;
+  const pos = new Float32Array(n * 3);
+  const w = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const [x, y, z] = raDecToVec3(
+      points[i].ra,
+      points[i].dec,
+      CELESTIAL_R * 0.998
+    );
+    pos[i * 3] = x;
+    pos[i * 3 + 1] = y;
+    pos[i * 3 + 2] = z;
+    w[i] = points[i].w;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute("aW", new THREE.BufferAttribute(w, 1));
+  const mat = new THREE.ShaderMaterial({
+    vertexShader: milkyVertex,
+    fragmentShader: milkyFragment,
+    uniforms: { uSize: { value: 55 } },
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  return new THREE.Points(geo, mat);
 }
 
 /** 星官连线：按所属分区着色 */
@@ -202,18 +262,31 @@ function buildRings(skyGroup: THREE.Group, fixedGroup: THREE.Group) {
 
 export default function Armillary({ sky }: { sky: ChineseSky }) {
   const containerRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * 显示历元。数据始终是 J2000 星表（唯一真值），历元只决定「按哪一年的天空画」——
+   * 北宋 1052 是苏颂星图年代，也是本项目的立题基点。
+   */
+  const [epoch, setEpoch] = useState<EpochId>(DEFAULT_EPOCH);
+  const view = useMemo(() => applyEpoch(sky, epoch), [sky, epoch]);
+  /** 相对 J2000 的全表平均位移，给用户一个量级感知 */
+  const meanShift = useMemo(() => meanPrecessionShift(sky, epoch), [sky, epoch]);
+
   const [showStars, setShowStars] = useState(true);
+  const [showMilky, setShowMilky] = useState(true);
   const [showLines, setShowLines] = useState(true);
   const [showMansion, setShowMansion] = useState(true);
   const [showRings, setShowRings] = useState(true);
   const [axisUp, setAxisUp] = useState(false); // 天轴摆正（赤道模式）
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
+
+  // 只存下标 —— 星位对象随历元更换，坐标必须每帧从 view 里取最新的
   const [selected, setSelected] = useState<{
-    star: SkyStar;
+    idx: number;
     asterism: Asterism | null;
   } | null>(null);
   const [hovered, setHovered] = useState<{
-    star: SkyStar;
+    idx: number;
     x: number;
     y: number;
   } | null>(null);
@@ -244,6 +317,8 @@ export default function Armillary({ sky }: { sky: ChineseSky }) {
 
   const refs = useRef<{
     stars?: THREE.Points;
+    milky?: THREE.Points;
+    posAttr?: THREE.BufferAttribute;
     hiAttr?: THREE.BufferAttribute;
     lines?: THREE.LineSegments;
     mansionLines?: THREE.LineSegments;
@@ -252,6 +327,14 @@ export default function Armillary({ sky }: { sky: ChineseSky }) {
     fixedGroup?: THREE.Group;
     sun?: THREE.Mesh;
   }>({});
+
+  /** 当前图层开关的最新值 —— 几何重建时用来恢复可见性，避免把开关写进重建依赖 */
+  const visRef = useRef({ lines: true, mansion: true, milky: true });
+  useEffect(() => {
+    visRef.current = { lines: showLines, mansion: showMansion, milky: showMilky };
+  }, [showLines, showMansion, showMilky]);
+  /** 设备像素比，银河点尺寸需要按它缩放 */
+  const prRef = useRef(1);
 
   /* —— 天象同步 —— */
   const [sync, setSync] = useState(false);
@@ -299,13 +382,13 @@ export default function Armillary({ sky }: { sky: ChineseSky }) {
     scene.add(fixedGroup);
     buildRings(skyGroup, fixedGroup);
 
-    // 星点
-    const n = sky.stars.length;
+    // 星点（初始位置取所选历元；切换历元由下方独立 effect 只更新坐标）
+    const n = view.stars.length;
     const pos = new Float32Array(n * 3);
     const scale = new Float32Array(n);
     const hi = new Float32Array(n);
     for (let i = 0; i < n; i++) {
-      const s = sky.stars[i];
+      const s = view.stars[i];
       const [x, y, z] = raDecToVec3(s.ra, s.dec);
       pos[i * 3] = x;
       pos[i * 3 + 1] = y;
@@ -313,7 +396,8 @@ export default function Armillary({ sky }: { sky: ChineseSky }) {
       scale[i] = magToScale(s.mag);
     }
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    const posAttr = new THREE.BufferAttribute(pos, 3);
+    geo.setAttribute("position", posAttr);
     geo.setAttribute("aScale", new THREE.BufferAttribute(scale, 1));
     const hiAttr = new THREE.BufferAttribute(hi, 1);
     geo.setAttribute("aHi", hiAttr);
@@ -329,10 +413,18 @@ export default function Armillary({ sky }: { sky: ChineseSky }) {
     skyGroup.add(stars);
 
     // 连线
-    const lines = buildAsterismLines(sky);
+    const lines = buildAsterismLines(view);
     skyGroup.add(lines);
-    const mansionLines = buildMansionLines(sky);
+    const mansionLines = buildMansionLines(view);
     skyGroup.add(mansionLines);
+
+    // 银河星尘：银道面方向真实，随天球一起岁差与自转
+    const milky = buildMilkyWay(precessList(MILKY_BASE, epoch));
+    (milky.material as THREE.ShaderMaterial).uniforms.uSize.value =
+      55 * renderer.getPixelRatio();
+    milky.visible = showMilky;
+    skyGroup.add(milky);
+    prRef.current = renderer.getPixelRatio();
 
     // 太阳此刻所在（随天球旋转）
     const sunBody = new THREE.Mesh(
@@ -353,6 +445,8 @@ export default function Armillary({ sky }: { sky: ChineseSky }) {
 
     refs.current = {
       stars,
+      milky,
+      posAttr,
       hiAttr,
       lines,
       mansionLines,
@@ -386,7 +480,7 @@ export default function Armillary({ sky }: { sky: ChineseSky }) {
       ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
       const idx = pick();
       if (idx != null) {
-        setHovered({ star: sky.stars[idx], x: e.clientX, y: e.clientY });
+        setHovered({ idx, x: e.clientX, y: e.clientY });
         renderer.domElement.style.cursor = "pointer";
       } else {
         setHovered(null);
@@ -397,7 +491,7 @@ export default function Armillary({ sky }: { sky: ChineseSky }) {
       const idx = pick();
       if (idx != null) {
         setSelected({
-          star: sky.stars[idx],
+          idx,
           asterism: starToAsterism.get(idx) || null,
         });
       }
@@ -435,6 +529,8 @@ export default function Armillary({ sky }: { sky: ChineseSky }) {
       (lines.material as THREE.Material).dispose();
       mansionLines.geometry.dispose();
       (mansionLines.material as THREE.Material).dispose();
+      milky.geometry.dispose();
+      (milky.material as THREE.Material).dispose();
       const sun = refs.current.sun;
       if (sun) {
         sun.geometry.dispose();
@@ -452,10 +548,70 @@ export default function Armillary({ sky }: { sky: ChineseSky }) {
     };
   }, [sky, starToAsterism]);
 
+  /**
+   * 历元切换：只重算星点坐标与连线几何，不重建 WebGL 场景 ——
+   * 重建会把相机姿态一起丢掉，观感上会「跳一下」。
+   */
+  const geoReady = useRef(false);
+  useEffect(() => {
+    if (!geoReady.current) {
+      geoReady.current = true;
+      return;
+    }
+    const r = refs.current;
+    const g = r.skyGroup;
+    const posAttr = r.posAttr;
+    if (!g || !posAttr) return;
+
+    const arr = posAttr.array as Float32Array;
+    for (let i = 0; i < view.stars.length; i++) {
+      const s = view.stars[i];
+      const [x, y, z] = raDecToVec3(s.ra, s.dec);
+      arr[i * 3] = x;
+      arr[i * 3 + 1] = y;
+      arr[i * 3 + 2] = z;
+    }
+    posAttr.needsUpdate = true;
+
+    // 连线拓扑不变，只是端点跟着星移动 —— 重建两个 LineSegments 最省事
+    if (r.lines) {
+      g.remove(r.lines);
+      r.lines.geometry.dispose();
+      (r.lines.material as THREE.Material).dispose();
+    }
+    const lines = buildAsterismLines(view);
+    lines.visible = visRef.current.lines;
+    g.add(lines);
+    r.lines = lines;
+
+    if (r.mansionLines) {
+      g.remove(r.mansionLines);
+      r.mansionLines.geometry.dispose();
+      (r.mansionLines.material as THREE.Material).dispose();
+    }
+    const ml = buildMansionLines(view);
+    ml.visible = visRef.current.mansion;
+    g.add(ml);
+    r.mansionLines = ml;
+
+    // 银河同样要按新历元重算
+    if (r.milky) {
+      g.remove(r.milky);
+      r.milky.geometry.dispose();
+      (r.milky.material as THREE.Material).dispose();
+    }
+    const mk = buildMilkyWay(precessList(MILKY_BASE, epoch));
+    (mk.material as THREE.ShaderMaterial).uniforms.uSize.value = 55 * prRef.current;
+    mk.visible = visRef.current.milky;
+    g.add(mk);
+    r.milky = mk;
+  }, [view, epoch]);
+
   // 显示开关
   useEffect(() => {
     const r = refs.current;
     if (r.stars) r.stars.visible = showStars;
+    if (r.milky) r.milky.visible = showMilky;
     if (r.lines) r.lines.visible = showLines;
     if (r.mansionLines) r.mansionLines.visible = showMansion;
     if (r.skyGroup) {
@@ -465,7 +621,7 @@ export default function Armillary({ sky }: { sky: ChineseSky }) {
       });
     }
     if (r.fixedGroup) r.fixedGroup.visible = showRings;
-  }, [showStars, showLines, showMansion, showRings]);
+  }, [showStars, showMilky, showLines, showMansion, showRings]);
 
   // 天轴姿态
   useEffect(() => {
@@ -521,18 +677,49 @@ export default function Armillary({ sky }: { sky: ChineseSky }) {
   const fmtDec = (deg: number) =>
     `${deg >= 0 ? "+" : "−"}${Math.abs(deg).toFixed(3)}°`;
 
+  // 选中星从 view 里实时取 —— 切历元后面板坐标随之更新
+  const selStar = selected ? view.stars[selected.idx] : null;
+  const epochLabel = EPOCHS.find((e) => e.id === epoch)?.label ?? "";
+
   return (
     <>
       <div ref={containerRef} className="armillary-root" />
 
       {/* 控制台 */}
       <Dock title="浑天仪 · 图层">
+        <DockSection>历元 EPOCH</DockSection>
+        <div className="chips">
+          {EPOCHS.map((e) => (
+            <Chip
+              key={e.id}
+              active={epoch === e.id}
+              onClick={() => setEpoch(e.id)}
+              title={e.note}
+            >
+              {e.label}
+            </Chip>
+          ))}
+        </div>
+        <div className="hint">
+          {epoch === "j2000"
+            ? "星表原历元。与北宋相距约 950 年，岁差已使星位整体偏移 13° 量级"
+            : `已按 IAU 1976 岁差把 J2000 星表归算到${
+                epoch === "song" ? "北宋 1052 年" : "当代"
+              }，全表平均位移 ${meanShift.toFixed(2)}°`}
+        </div>
+
         <DockSection>天球图层</DockSection>
         <Toggle
           checked={showStars}
           onChange={setShowStars}
           label="星点"
           meta={String(sky.stars.length)}
+        />
+        <Toggle
+          checked={showMilky}
+          onChange={setShowMilky}
+          label="银河"
+          meta="银道面"
         />
         <Toggle
           checked={showLines}
@@ -590,17 +777,16 @@ export default function Armillary({ sky }: { sky: ChineseSky }) {
           className="tooltip"
           style={{ left: hovered.x + 14, top: hovered.y + 14 }}
         >
-          {hovered.star.zh || "无名星"}
+          {view.stars[hovered.idx].zh || "无名星"}
           <span>
-            {starToAsterism.get(sky.stars.indexOf(hovered.star))?.zh ||
-              "—"}{" "}
-            · {hovered.star.mag.toFixed(2)} 等
+            {starToAsterism.get(hovered.idx)?.zh || "—"} ·{" "}
+            {view.stars[hovered.idx].mag.toFixed(2)} 等
           </span>
         </div>
       )}
 
       {/* 详情面板 */}
-      {selected && (
+      {selected && selStar && (
         <div className="panel">
           <button
             className="close"
@@ -617,12 +803,12 @@ export default function Armillary({ sky }: { sky: ChineseSky }) {
               ? "二十八宿"
               : "星官"}
           </div>
-          <h2>{selected.star.zh || "无名星"}</h2>
+          <h2>{selStar.zh || "无名星"}</h2>
           <div className="sub">
-            {selected.star.hip
-              ? `HIP ${selected.star.hip}`
-              : `Gaia DR3 ${selected.star.gaia ?? "—"}`}
-            {selected.star.en ? ` · ${selected.star.en}` : ""}
+            {selStar.hip
+              ? `HIP ${selStar.hip}`
+              : `Gaia DR3 ${selStar.gaia ?? "—"}`}
+            {selStar.en ? ` · ${selStar.en}` : ""}
           </div>
 
           <div className="tags">
@@ -642,13 +828,15 @@ export default function Armillary({ sky }: { sky: ChineseSky }) {
 
           <dl className="meta">
             <dt>赤经 α</dt>
-            <dd>{fmtRa(selected.star.ra)}</dd>
+            <dd>{fmtRa(selStar.ra)}</dd>
             <dt>赤纬 δ</dt>
-            <dd>{fmtDec(selected.star.dec)}</dd>
+            <dd>{fmtDec(selStar.dec)}</dd>
             <dt>去极度</dt>
-            <dd>{selected.star.quji.toFixed(3)}°</dd>
+            <dd>{selStar.quji.toFixed(3)}°</dd>
             <dt>视星等</dt>
-            <dd>{selected.star.mag.toFixed(2)}</dd>
+            <dd>{selStar.mag.toFixed(2)}</dd>
+            <dt>历元</dt>
+            <dd>{epochLabel}</dd>
           </dl>
         </div>
       )}

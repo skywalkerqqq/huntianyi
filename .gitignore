@@ -14,8 +14,9 @@ next-env.d.ts
 # 归档区：调试截图、一次性探测脚本（可重新生成，不入库）
 _archive/
 
-# 脚本产生的截图
+# 脚本产生的截图与编译中间产物
 scripts/*.png
+scripts/_astro_out/
 
 # 环境
 .env

@@ -10,7 +10,7 @@
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "data:sky": "node scripts/export_sky.mjs",
-    "test:astro": "node scripts/test_astro.mjs"
+    "test:astro": "tsc src/lib/astro.ts --outDir scripts/_astro_out --module esnext --target es2022 --skipLibCheck && node -e \"require('fs').writeFileSync('scripts/_astro_out/package.json',JSON.stringify({type:'module'}))\" && node scripts/test_astro.mjs"
   },
   "dependencies": {
     "next": "^15.1.6",

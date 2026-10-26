@@ -90,6 +90,10 @@ const ok = (cond, tag, extra = "") =>
   );
 
   console.log("\n[2] 时刻校正 → 织女一上中天应落在子午线顶端");
+  // 星位默认已按北宋历元做岁差归算（织女一偏移 6.2°）；
+  // 本节校验的是「授时 → 旋转角」这条链路，先切回星表原历元，把岁差变量摘出去。
+  await p.click('.dock .chip:text-is("J2000")');
+  await p.waitForTimeout(250);
   const tStar = timeOfLast(VEGA.ra, Date.now());
   await p.fill(".dtinput", toLocalInput(tStar));
   await p.waitForTimeout(700);

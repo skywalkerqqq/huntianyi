@@ -22,7 +22,7 @@ const { launch } = require("./_pw.cjs");
     const outer = document.querySelector("g.ring-outer");
     const inner = document.querySelector("g.ring-inner");
     return {
-      stars: document.querySelectorAll('circle[style*="pointer"]').length,
+      stars: document.querySelectorAll("[data-si]").length,
       innerStars: inner ? inner.querySelectorAll("circle").length : 0,
       outerStars: outer ? outer.querySelectorAll("circle").length : 0,
       polylines: document.querySelectorAll("polyline").length,
@@ -55,7 +55,7 @@ const { launch } = require("./_pw.cjs");
   }));
   console.log("DRAG_OUTER:", JSON.stringify(t));
 
-  await page.click('.chip:text-is("归零")');
+  await page.click('.btn:text-is("旋回 ±0°")');
   await page.waitForTimeout(200);
 
   // —— 测试 2：拖动内圈（半径 60 < 内规）→ 内圈转 ——
@@ -73,9 +73,9 @@ const { launch } = require("./_pw.cjs");
   await page.screenshot({ path: "_archive/screenshots/shot_flat_rot.png" });
 
   // —— 测试 2.5：取消联动 → 拖外圈，内圈应保持不变 ——
-  await page.click('.chip:text-is("归零")');
+  await page.click('.btn:text-is("旋回 ±0°")');
   await page.evaluate(() => {
-    const boxes = [...document.querySelectorAll(".console input")];
+    const boxes = [...document.querySelectorAll(".dock input")];
     const lk = boxes.find((b) => b.parentElement?.textContent?.includes("内外圈联动"));
     if (lk) lk.click();
   });
@@ -94,15 +94,15 @@ const { launch } = require("./_pw.cjs");
   await page.screenshot({ path: "_archive/screenshots/shot_flat_unlinked.png" });
   // 恢复联动
   await page.evaluate(() => {
-    const boxes = [...document.querySelectorAll(".console input")];
+    const boxes = [...document.querySelectorAll(".dock input")];
     const lk = boxes.find((b) => b.parentElement?.textContent?.includes("内外圈联动"));
     if (lk) lk.click();
   });
 
   // —— 测试 3：自动旋转 ——
-  await page.click('.chip:text-is("归零")');
+  await page.click('.btn:text-is("旋回 ±0°")');
   await page.evaluate(() => {
-    const boxes = [...document.querySelectorAll(".console input")];
+    const boxes = [...document.querySelectorAll(".dock input")];
     const spin = boxes.find((b) => b.parentElement?.textContent?.includes("自动旋转"));
     if (spin) spin.click();
   });
@@ -113,14 +113,14 @@ const { launch } = require("./_pw.cjs");
   console.log("AUTO_SPIN:", spun);
   // 关掉
   await page.evaluate(() => {
-    const boxes = [...document.querySelectorAll(".console input")];
+    const boxes = [...document.querySelectorAll(".dock input")];
     const spin = boxes.find((b) => b.parentElement?.textContent?.includes("自动旋转"));
     if (spin) spin.click();
   });
 
   // —— 测试 4：点击星 ——
-  await page.click('.chip:text-is("归零")');
-  const stars = page.locator('circle[style*="pointer"]');
+  await page.click('.btn:text-is("旋回 ±0°")');
+  const stars = page.locator("[data-si]");
   let name = null;
   for (const idx of [400, 700, 200]) {
     try {

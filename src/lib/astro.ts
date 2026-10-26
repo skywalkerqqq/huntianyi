@@ -97,3 +97,134 @@ export function localLabel(ms: number): string {
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
+
+/* ==========================================================================
+   岁差 —— 古代星空复现的核心
+   ========================================================================== */
+
+/** J2000.0 历元的儒略日 */
+export const J2000_JD = 2451545.0;
+
+/**
+ * 指定年月日 0h UT 的儒略日。
+ * 1582-10-15 之前按儒略历计算（天文学惯例），之后按格里高利历。
+ * —— 北宋星位必须用儒略历，否则会差出 6 天。
+ */
+export function yearToJD(year: number, month = 1, day = 1): number {
+  let y = year;
+  let m = month;
+  if (m <= 2) {
+    y -= 1;
+    m += 12;
+  }
+  const gregorian =
+    year > 1582 || (year === 1582 && (month > 10 || (month === 10 && day >= 15)));
+  const A = Math.floor(y / 100);
+  const B = gregorian ? 2 - A + Math.floor(A / 4) : 0;
+  return (
+    Math.floor(365.25 * (y + 4716)) +
+    Math.floor(30.6001 * (m + 1)) +
+    day +
+    B -
+    1524.5
+  );
+}
+
+/**
+ * 赤经赤纬的岁差改正（IAU 1976 三转角，Meeus《Astronomical Algorithms》21.2）。
+ *
+ * 星表给的是 J2000 位置；要复原北宋（约 1052 年）的星空，必须把每颗星
+ * 沿岁差回推约 950 年 —— 全表平均位移 10.7°，最大 13.2°，不是可忽略量。
+ *
+ * @param toJD   目标历元儒略日
+ * @param fromJD 源历元儒略日，默认 J2000
+ */
+export function precessRaDec(
+  raDeg: number,
+  decDeg: number,
+  toJD: number,
+  fromJD: number = J2000_JD
+): { ra: number; dec: number } {
+  const T = (fromJD - 2451545.0) / 36525;
+  const t = (toJD - fromJD) / 36525;
+
+  const zeta =
+    ((2306.2181 + 1.39656 * T - 0.000139 * T * T) * t +
+      (0.30188 - 0.000344 * T) * t * t +
+      0.017998 * t * t * t) /
+    3600;
+  const z =
+    ((2306.2181 + 1.39656 * T - 0.000139 * T * T) * t +
+      (1.09468 + 0.000066 * T) * t * t +
+      0.018203 * t * t * t) /
+    3600;
+  const theta =
+    ((2004.3109 - 0.8533 * T - 0.000217 * T * T) * t -
+      (0.42665 + 0.000217 * T) * t * t -
+      0.041833 * t * t * t) /
+    3600;
+
+  const a = raDeg * DEG + zeta * DEG;
+  const d = decDeg * DEG;
+  const cth = Math.cos(theta * DEG);
+  const sth = Math.sin(theta * DEG);
+
+  const A = Math.cos(d) * Math.sin(a);
+  const B = cth * Math.cos(d) * Math.cos(a) - sth * Math.sin(d);
+  const C = sth * Math.cos(d) * Math.cos(a) + cth * Math.sin(d);
+
+  return {
+    ra: norm360(Math.atan2(A, B) * RAD + z),
+    dec: Math.asin(Math.max(-1, Math.min(1, C))) * RAD,
+  };
+}
+
+export type EpochId = "song" | "j2000" | "now";
+
+export interface Epoch {
+  id: EpochId;
+  label: string;
+  /** 图上/面板里的补充说明 */
+  note: string;
+  jd: number;
+}
+
+/**
+ * 可选历元。
+ * 默认「北宋 1052」——苏颂《新仪象法要》星图的观测年代，也是本项目的立题基点。
+ * 「当代」固定为 2026 年初而非取运行时时钟：历元值是确定性常量，
+ * SSR 与 hydration 结果完全一致，不会触发浮点精度分歧。
+ */
+export const EPOCHS: Epoch[] = [
+  {
+    id: "song",
+    label: "北宋 1052",
+    note: "苏颂《新仪象法要》星图年代 · 儒略历",
+    jd: yearToJD(1052),
+  },
+  {
+    id: "j2000",
+    label: "J2000",
+    note: "现代星表原历元",
+    jd: J2000_JD,
+  },
+  {
+    id: "now",
+    label: "当代",
+    note: "2026 年初，用于与今夜空对照",
+    jd: yearToJD(2026),
+  },
+];
+
+export const DEFAULT_EPOCH: EpochId = "song";
+
+export function epochById(id: EpochId): Epoch {
+  return EPOCHS.find((e) => e.id === id) ?? EPOCHS[0];
+}
+
+/** 两历元之间的年数（带符号），用于面板文案 */
+export function epochYearLabel(jd: number): string {
+  const year = 2000 + ((jd - J2000_JD) / 365.2422);
+  const y = Math.round(year);
+  return y < 0 ? `公元前 ${-y + 1} 年` : `公元 ${y} 年`;
+}

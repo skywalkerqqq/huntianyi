@@ -3,7 +3,21 @@
  * 运行：node scripts/test_astro.mjs（先由 scripts/prep_astro.sh 编译 TS → JS）
  */
 import assert from "node:assert/strict";
-import { gmstDeg, lstDeg, sunRaDec, SITE, SIDEREAL_DAY_MS, rotationFromLast, degToHms, toLocalInput, fromLocalInput } from "./_astro_out/astro.js";
+import fs from "node:fs";
+import {
+  gmstDeg,
+  lstDeg,
+  sunRaDec,
+  SITE,
+  SIDEREAL_DAY_MS,
+  rotationFromLast,
+  degToHms,
+  toLocalInput,
+  fromLocalInput,
+  precessRaDec,
+  yearToJD,
+  J2000_JD,
+} from "./_astro_out/astro.js";
 
 const utc = (s) => Date.parse(s);
 const near = (a, b, tol, tag) => {
@@ -54,4 +68,82 @@ assert.ok(!Number.isNaN(ms), "fromLocalInput 解析失败");
 assert.equal(toLocalInput(ms), "2026-10-05T22:30", "往返不一致");
 console.log("  ✓ 往返一致:", toLocalInput(ms));
 
+/* ==========================================================================
+   岁差 —— 本项目「古代星空复现」的核心，数值必须锁死
+   ========================================================================== */
+console.log("\n[7] 儒略日与历元");
+// 1052-01-01 按儒略历（1582 年前天文学惯例）= JD 2105300.5
+assert.ok(
+  Math.abs(yearToJD(1052) - 2105300.5) < 1e-9,
+  `1052-01-01 儒略日应为 2105300.5，实为 ${yearToJD(1052)}`
+);
+console.log("  ✓ 1052-01-01（儒略历） JD =", yearToJD(1052));
+assert.ok(Math.abs(yearToJD(1582, 10, 15) - 2299160.5) < 1e-9, "格里高利历首日 JD");
+console.log("  ✓ 1582-10-15（格里高利历） JD =", yearToJD(1582, 10, 15));
+
+console.log("\n[8] 岁差：J2000 → 北宋 1052");
+const sky = JSON.parse(
+  fs.readFileSync(new URL("../src/data/chineseSky.json", import.meta.url), "utf8")
+);
+const jd1052 = yearToJD(1052);
+const named = new Map(sky.stars.filter((s) => s.zh).map((s) => [s.zh, s]));
+
+// 勾陈一（今北极星）：J2000 去极度 0.736°，1052 年应为 5.916°
+{
+  const s = named.get("勾陈一");
+  assert.ok(s, "找不到勾陈一");
+  const p = precessRaDec(s.ra, s.dec, jd1052);
+  const quji = 90 - p.dec;
+  assert.ok(
+    Math.abs(quji - 5.916) < 0.01,
+    `勾陈一 1052 年去极度应为 5.916°，实为 ${quji.toFixed(3)}°`
+  );
+  console.log(
+    `  ✓ 勾陈一去极度 ${(90 - s.dec).toFixed(3)}° → ${quji.toFixed(3)}°（宋人「离极三度有余」的另一侧）`
+  );
+}
+
+// 角宿一（Spica）：13.21°
+{
+  const s = named.get("角宿一");
+  const p = precessRaDec(s.ra, s.dec, jd1052);
+  const sep = angularSep(s.ra, s.dec, p.ra, p.dec);
+  assert.ok(Math.abs(sep - 13.21) < 0.02, `角宿一位移应为 13.21°，实为 ${sep.toFixed(3)}°`);
+  console.log(`  ✓ 角宿一岁差位移 ${sep.toFixed(2)}°`);
+}
+
+// 全表均值：10.70°
+{
+  let sum = 0;
+  for (const s of sky.stars) {
+    const p = precessRaDec(s.ra, s.dec, jd1052);
+    sum += angularSep(s.ra, s.dec, p.ra, p.dec);
+  }
+  const mean = sum / sky.stars.length;
+  assert.ok(
+    Math.abs(mean - 10.7) < 0.05,
+    `全表平均位移应为 10.70°，实为 ${mean.toFixed(3)}°`
+  );
+  console.log(`  ✓ 全部 ${sky.stars.length} 星平均位移 ${mean.toFixed(2)}°`);
+}
+
+console.log("\n[9] 岁差往返可逆");
+{
+  const s = named.get("参宿四");
+  const f = precessRaDec(s.ra, s.dec, jd1052, J2000_JD);
+  const b = precessRaDec(f.ra, f.dec, J2000_JD, jd1052);
+  const d = angularSep(s.ra, s.dec, b.ra, b.dec);
+  assert.ok(d < 1e-6, `往返误差 ${d}° 过大`);
+  console.log(`  ✓ J2000 → 1052 → J2000 往返误差 ${d.toExponential(2)}°`);
+}
+
 console.log("\n全部断言通过 ✓\n");
+
+/** 球面角距（度） */
+function angularSep(ra1, de1, ra2, de2) {
+  const D = Math.PI / 180;
+  const c =
+    Math.sin(de1 * D) * Math.sin(de2 * D) +
+    Math.cos(de1 * D) * Math.cos(de2 * D) * Math.cos((ra1 - ra2) * D);
+  return (Math.acos(Math.max(-1, Math.min(1, c))) * 180) / Math.PI;
+}

@@ -11,7 +11,12 @@ import {
 } from "@/lib/sky";
 import { Chip, Dock, DockSection, Slider, Toggle } from "@/components/ui";
 import { SkyClockPanel, useSkyClock } from "@/components/TimeSync";
-import { SIDEREAL_DAY_MS } from "@/lib/astro";
+import { DEFAULT_EPOCH, EPOCHS, SIDEREAL_DAY_MS, type EpochId } from "@/lib/astro";
+import { applyEpoch, meanPrecessionShift, precessList } from "@/lib/epoch";
+import { milkyWayPoints } from "@/lib/milkyway";
+
+/** 盖图上的银河星尘（固定 seed，服务端与客户端必须一致） */
+const MILKY_SVG = milkyWayPoints(2200, 20260101);
 
 /** 画布半径：去极度 180°（南天极）对应 R_MAX */
 const R_MAX = 520;
@@ -278,7 +283,14 @@ const ObserverFrame = memo(function ObserverFrame() {
 
 export default function SkyMap({ sky }: { sky: ChineseSky }) {
   const svgRef = useRef<SVGSVGElement>(null);
+
+  /** 显示历元：星表本身仍是 J2000，这里按岁差归算到所选年代 */
+  const [epoch, setEpoch] = useState<EpochId>(DEFAULT_EPOCH);
+  const view = useMemo(() => applyEpoch(sky, epoch), [sky, epoch]);
+  const meanShift = useMemo(() => meanPrecessionShift(sky, epoch), [sky, epoch]);
+
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
+  const [showMilky, setShowMilky] = useState(true);
   const [showLabels, setShowLabels] = useState(true);
   const [showLines, setShowLines] = useState(true);
   const [innerAngle, setInnerAngle] = useState(0);
@@ -307,12 +319,13 @@ export default function SkyMap({ sky }: { sky: ChineseSky }) {
     }
     setSync(v);
   };
+  // 只存下标：星位随历元更换，坐标须从 view 现取
   const [selected, setSelected] = useState<{
-    star: SkyStar;
+    idx: number;
     asterism: Asterism | null;
   } | null>(null);
   const [hovered, setHovered] = useState<{
-    star: SkyStar;
+    idx: number;
     x: number;
     y: number;
   } | null>(null);
@@ -337,15 +350,15 @@ export default function SkyMap({ sky }: { sky: ChineseSky }) {
 
   const starToAsterism = useMemo(() => {
     const m = new Map<number, Asterism>();
-    for (const a of sky.asterisms) {
+    for (const a of view.asterisms) {
       for (const i of a.stars) if (!m.has(i)) m.set(i, a);
     }
     return m;
-  }, [sky]);
+  }, [view]);
 
   const groups = useMemo(() => {
     const g = new Map<string, number>();
-    for (const a of sky.asterisms) {
+    for (const a of view.asterisms) {
       const k = groupKey(a);
       g.set(k, (g.get(k) || 0) + 1);
     }
@@ -355,37 +368,58 @@ export default function SkyMap({ sky }: { sky: ChineseSky }) {
       name: k,
       count: g.get(k)!,
     }));
-  }, [sky]);
+  }, [view]);
 
   /** 按内规把星与连线分成内圈 / 外圈两层 */
   const layers = useMemo(() => {
     const inner: { s: SkyStar; i: number }[] = [];
     const outer: { s: SkyStar; i: number }[] = [];
-    sky.stars.forEach((s, i) => {
+    view.stars.forEach((s, i) => {
       (s.quji <= INNER_QJ ? inner : outer).push({ s, i });
     });
 
     const innerLines: { a: Asterism; seg: number[] }[] = [];
     const outerLines: { a: Asterism; seg: number[] }[] = [];
-    for (const a of sky.asterisms) {
+    for (const a of view.asterisms) {
       for (const seg of a.lines) {
-        const ss = seg.map((si) => sky.stars[si]).filter(Boolean);
+        const ss = seg.map((si) => view.stars[si]).filter(Boolean);
         if (!ss.length) continue;
         const avg = ss.reduce((t, x) => t + x.quji, 0) / ss.length;
         (avg <= INNER_QJ ? innerLines : outerLines).push({ a, seg });
       }
     }
     return { inner, outer, innerLines, outerLines };
-  }, [sky]);
+  }, [view]);
 
   const hiStars = useMemo(() => {
     const s = new Set<number>();
     if (!activeGroup) return s;
-    for (const a of sky.asterisms) {
+    for (const a of view.asterisms) {
       if (groupKey(a) === activeGroup) for (const i of a.stars) s.add(i);
     }
     return s;
-  }, [activeGroup, sky]);
+  }, [activeGroup, view]);
+
+  /**
+   * 银河：按内外规拆成两层，各自跟随所属圆盘旋转 ——
+   * 与星点分层同一判据（去极度 ≤ 观测纬度即恒显）。整条银河若只放一层，
+   * 取消联动后就会跟错盘。
+   */
+  const milkyPaths = useMemo(() => {
+    const pts = precessList(MILKY_SVG, epoch);
+    let inner = "";
+    let outer = "";
+    for (const p of pts) {
+      const [x, y] = toXY(p.ra, p.dec);
+      const s = 1.5 + p.w * 2.1;
+      const seg =
+        `M${(x - s / 2).toFixed(2)} ${(y - s / 2).toFixed(2)}` +
+        `h${s.toFixed(2)}v${s.toFixed(2)}h${(-s).toFixed(2)}z`;
+      if (90 - p.dec <= INNER_QJ) inner += seg;
+      else outer += seg;
+    }
+    return { inner, outer };
+  }, [epoch]);
 
   const ecliptic = useMemo(eclipticPath, []);
 
@@ -602,8 +636,7 @@ export default function SkyMap({ sky }: { sky: ChineseSky }) {
   function handleMove(e: React.MouseEvent) {
     const i = starIndexFrom(e.target);
     if (i != null) {
-      const s = sky.stars[i];
-      if (s) setHovered({ star: s, x: e.clientX, y: e.clientY });
+      if (view.stars[i]) setHovered({ idx: i, x: e.clientX, y: e.clientY });
       return;
     }
     if (hovered) setHovered(null);
@@ -613,15 +646,18 @@ export default function SkyMap({ sky }: { sky: ChineseSky }) {
     if (drag.current.moved) return;
     const i = starIndexFrom(e.target);
     if (i == null) return;
-    const s = sky.stars[i];
-    if (!s) return;
-    setSelected({ star: s, asterism: starToAsterism.get(i) || null });
+    if (!view.stars[i]) return;
+    setSelected({ idx: i, asterism: starToAsterism.get(i) || null });
   }
 
   const reset = () => {
     setInnerAngle(0);
     setOuterAngle(0);
   };
+
+  /** 选中星从 view 现取 —— 切历元后坐标随之更新 */
+  const selStar = selected ? view.stars[selected.idx] : null;
+  const epochLabel = EPOCHS.find((e) => e.id === epoch)?.label ?? "";
 
   const fmtRa = (deg: number) => {
     const h = deg / 15;
@@ -690,6 +726,10 @@ export default function SkyMap({ sky }: { sky: ChineseSky }) {
               <stop offset="0%" stopColor="#1b2438" />
               <stop offset="100%" stopColor="#131a2b" />
             </radialGradient>
+            {/* 银河星尘用模糊合成连续的雾带 —— 比单纯堆点数更像银河 */}
+            <filter id="milkyBlur" x="-15%" y="-15%" width="130%" height="130%">
+              <feGaussianBlur stdDeviation="2.6" />
+            </filter>
           </defs>
 
           <circle r={R_MAX + 30} fill="url(#bgGrad)" />
@@ -762,6 +802,9 @@ export default function SkyMap({ sky }: { sky: ChineseSky }) {
             className="ring-outer"
             transform={`rotate(${outerRot.toFixed(3)})`}
           >
+            {showMilky ? (
+              <path d={milkyPaths.outer} fill="#8d9cc4" opacity={0.5} filter="url(#milkyBlur)" pointerEvents="none" />
+            ) : null}
             <path
               d={ecliptic}
               fill="none"
@@ -770,7 +813,7 @@ export default function SkyMap({ sky }: { sky: ChineseSky }) {
               strokeDasharray="7 5"
               opacity={0.85}
             />
-            {sky.mansions.map((m) => {
+            {view.mansions.map((m) => {
               if (m.ra == null) return null;
               const t = (m.ra * Math.PI) / 180;
               const x2 = +(R_MAX * Math.cos(t)).toFixed(3);
@@ -808,7 +851,7 @@ export default function SkyMap({ sky }: { sky: ChineseSky }) {
               <LineLayer
                 list={layers.outerLines}
                 activeGroup={activeGroup}
-                sky={sky}
+                sky={view}
               />
             )}
             <StarLayer
@@ -827,11 +870,14 @@ export default function SkyMap({ sky }: { sky: ChineseSky }) {
             className="ring-inner"
             transform={`rotate(${innerRot.toFixed(3)})`}
           >
+            {showMilky ? (
+              <path d={milkyPaths.inner} fill="#8d9cc4" opacity={0.5} filter="url(#milkyBlur)" pointerEvents="none" />
+            ) : null}
             {showLines && (
               <LineLayer
                 list={layers.innerLines}
                 activeGroup={activeGroup}
-                sky={sky}
+                sky={view}
               />
             )}
             <StarLayer
@@ -915,7 +961,34 @@ export default function SkyMap({ sky }: { sky: ChineseSky }) {
 
       {/* 控制台 */}
       <Dock title="盖天图 · 图层">
+        <DockSection>历元 EPOCH</DockSection>
+        <div className="chips">
+          {EPOCHS.map((e) => (
+            <Chip
+              key={e.id}
+              active={epoch === e.id}
+              onClick={() => setEpoch(e.id)}
+              title={e.note}
+            >
+              {e.label}
+            </Chip>
+          ))}
+        </div>
+        <div className="hint">
+          {epoch === "j2000"
+            ? "星表原历元。与北宋相距约 950 年，岁差已使星位整体偏移 13° 量级"
+            : `已按 IAU 1976 岁差归算到${
+                epoch === "song" ? "北宋 1052 年" : "当代"
+              }，全表平均位移 ${meanShift.toFixed(2)}°`}
+        </div>
+
         <DockSection>星图图层</DockSection>
+        <Toggle
+          checked={showMilky}
+          onChange={setShowMilky}
+          label="银河"
+          meta="银道面"
+        />
         <Toggle checked={showLines} onChange={setShowLines} label="星官连线" />
         <Toggle checked={showLabels} onChange={setShowLabels} label="亮星标注" />
 
@@ -1022,15 +1095,15 @@ export default function SkyMap({ sky }: { sky: ChineseSky }) {
           className="tooltip"
           style={{ left: hovered.x + 14, top: hovered.y + 14 }}
         >
-          {hovered.star.zh || "无名星"}
+          {view.stars[hovered.idx].zh || "无名星"}
           <span>
-            {starToAsterism.get(sky.stars.indexOf(hovered.star))?.zh || "—"} ·{" "}
-            {hovered.star.mag.toFixed(2)} 等
+            {starToAsterism.get(hovered.idx)?.zh || "—"} ·{" "}
+            {view.stars[hovered.idx].mag.toFixed(2)} 等
           </span>
         </div>
       )}
 
-      {selected && (
+      {selected && selStar && (
         <div className="panel">
           <button
             className="close"
@@ -1047,14 +1120,14 @@ export default function SkyMap({ sky }: { sky: ChineseSky }) {
               ? "二十八宿"
               : "星官"}
           </div>
-          <h2>{selected.star.zh || "无名星"}</h2>
+          <h2>{selStar.zh || "无名星"}</h2>
           <div className="sub">
-            {selected.star.hip ? `HIP ${selected.star.hip}` : "Gaia DR3"}
-            {selected.star.en ? ` · ${selected.star.en}` : ""}
+            {selStar.hip ? `HIP ${selStar.hip}` : "Gaia DR3"}
+            {selStar.en ? ` · ${selStar.en}` : ""}
           </div>
 
           <div className="tags">
-            {selected.star.quji <= INNER_QJ ? (
+            {selStar.quji <= INNER_QJ ? (
               <span className="tag">内圈 · 恒显</span>
             ) : (
               <span className="tag">外圈 · 二十八宿</span>
@@ -1075,16 +1148,18 @@ export default function SkyMap({ sky }: { sky: ChineseSky }) {
 
           <dl className="meta">
             <dt>赤经 α</dt>
-            <dd>{fmtRa(selected.star.ra)}</dd>
+            <dd>{fmtRa(selStar.ra)}</dd>
             <dt>赤纬 δ</dt>
             <dd>
-              {selected.star.dec >= 0 ? "+" : "−"}
-              {Math.abs(selected.star.dec).toFixed(3)}°
+              {selStar.dec >= 0 ? "+" : "−"}
+              {Math.abs(selStar.dec).toFixed(3)}°
             </dd>
             <dt>去极度</dt>
-            <dd>{selected.star.quji.toFixed(3)}°</dd>
+            <dd>{selStar.quji.toFixed(3)}°</dd>
             <dt>视星等</dt>
-            <dd>{selected.star.mag.toFixed(2)}</dd>
+            <dd>{selStar.mag.toFixed(2)}</dd>
+            <dt>历元</dt>
+            <dd>{epochLabel}</dd>
           </dl>
         </div>
       )}
